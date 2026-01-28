@@ -11,6 +11,7 @@
         "lint:lint": "biome lint --write"
     },
     "dependencies": {
+        "@vercel/edge-config": "^1.4.3",
         "fflate": "^0.8.2",
         "next": "16.1.6",
         "react": "19.2.4",

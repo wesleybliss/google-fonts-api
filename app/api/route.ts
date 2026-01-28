@@ -1,93 +1,176 @@
+import { get, parseConnectionString } from '@vercel/edge-config'
 import { unzipSync } from 'fflate'
 import { NextResponse } from 'next/server'
 
 const GOOGLE_FONTS_ZIP_URL = 'https://github.com/google/fonts/archive/refs/heads/main.zip'
 const CACHE_TTL_MS = 24 * 60 * 60 * 1000
+const LAST_FETCHED_KEY = 'fontsLastFetchedAt'
 
 type CacheData = {
     families: string[]
+}
+
+type RefreshResult = CacheData & {
     fetchedAt: number
 }
 
 let cache: CacheData | null = null
-let refreshPromise: Promise<CacheData> | null = null
+let refreshPromise: Promise<RefreshResult> | null = null
 
 const textDecoder = new TextDecoder('utf-8')
 
-const isCacheFresh = (data: CacheData | null) => {
-    if (!data) {
-        return false
-    }
+const getLastFetchedAt = async () => {
+    
+    const value = await get(LAST_FETCHED_KEY)
+    
+    if (typeof value === 'number' && Number.isFinite(value))
+        return value
 
-    return Date.now() - data.fetchedAt < CACHE_TTL_MS
+    if (typeof value === 'string') {
+        
+        const parsed = Number(value)
+        
+        if (Number.isFinite(parsed))
+            return parsed
+        
+    }
+    
+    return null
+    
+}
+
+const isCacheFresh = (lastFetchedAt: number | null) => {
+    
+    if (!lastFetchedAt)
+        return false
+    
+    return Date.now() - lastFetchedAt < CACHE_TTL_MS
+    
+}
+
+const updateLastFetchedAt = async (fetchedAt: number) => {
+    
+    const connectionString = process.env.EDGE_CONFIG
+    
+    if (!connectionString)
+        throw new Error('EDGE_CONFIG is not set')
+    
+    const connection = parseConnectionString(connectionString)
+    
+    if (!connection)
+        throw new Error('EDGE_CONFIG connection string is invalid')
+    
+    const vercelToken = process.env.VERCEL_API_TOKEN ?? process.env.VERCEL_OIDC_TOKEN
+    
+    if (!vercelToken)
+        throw new Error('VERCEL_API_TOKEN or VERCEL_OIDC_TOKEN is not set')
+    
+    const response = await fetch(`https://api.vercel.com/v1/edge-config/${connection.id}/items`, {
+        method: 'PATCH',
+        headers: {
+            Authorization: `Bearer ${vercelToken}`,
+            'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+            items: [
+                {
+                    operation: 'upsert',
+                    key: LAST_FETCHED_KEY,
+                    value: fetchedAt,
+                },
+            ],
+        }),
+    })
+    
+    if (!response.ok)
+        throw new Error(`Failed to update Edge Config: ${response.status}`)
+    
 }
 
 const parseFontFamilies = (zipEntries: Record<string, Uint8Array>) => {
+    
     const families = new Set<string>()
-
+    
     for (const [path, contents] of Object.entries(zipEntries)) {
-        if (!path.endsWith('METADATA.pb')) {
+        
+        if (!path.endsWith('METADATA.pb'))
             continue
-        }
-
+        
         const text = textDecoder.decode(contents)
         const match = /name:\s*"([^"]+)"/.exec(text)
-
-        if (!match?.[1]) {
+        
+        if (!match?.[1])
             continue
-        }
-
+        
         const familyName = match[1]
         const encoded = encodeURIComponent(familyName).replaceAll('%20', '+')
+        
         families.add(encoded)
+        
     }
-
-    return Array.from(families).sort((a, b) => a.localeCompare(b))
+    
+    return Array.from(families)
+        .sort((a, b) => a.localeCompare(b))
+    
 }
 
 const refreshCache = async () => {
-    if (refreshPromise) {
+    
+    if (refreshPromise)
         return refreshPromise
-    }
-
+    
     refreshPromise = (async () => {
+        
         const response = await fetch(GOOGLE_FONTS_ZIP_URL, { cache: 'no-store' })
-
-        if (!response.ok) {
+        
+        if (!response.ok)
             throw new Error(`Failed to fetch Google Fonts zip: ${response.status}`)
-        }
-
+        
         const buffer = await response.arrayBuffer()
         const entries = unzipSync(new Uint8Array(buffer))
         const families = parseFontFamilies(entries)
-
+        
         const data = {
             families,
             fetchedAt: Date.now(),
-        } satisfies CacheData
-
-        cache = data
+        } satisfies RefreshResult
+        
+        await updateLastFetchedAt(data.fetchedAt)
+        
+        cache = { families: data.families }
+        
         return data
+        
     })()
-
+    
     try {
         return await refreshPromise
     } finally {
         refreshPromise = null
     }
+    
 }
 
 export const GET = async () => {
-    const data = isCacheFresh(cache) ? cache : await refreshCache()
-
-    if (!data) {
-        return NextResponse.json({ error: 'Font cache unavailable' }, { status: 500 })
+    
+    let lastFetchedAt = await getLastFetchedAt()
+    let families: string[] | null = null
+    
+    if (cache && isCacheFresh(lastFetchedAt)) {
+        families = cache.families
+    } else {
+        const refreshed = await refreshCache()
+        families = refreshed.families
+        lastFetchedAt = refreshed.fetchedAt
     }
-
+    
+    if (!families)
+        return NextResponse.json({ error: 'Font cache unavailable' }, { status: 500 })
+    
     return NextResponse.json(
         {
-            updatedAt: new Date(data.fetchedAt).toISOString(),
-            families: data.families,
+            updatedAt: new Date(lastFetchedAt ?? Date.now()).toISOString(),
+            families,
         },
         {
             headers: {
@@ -95,4 +178,5 @@ export const GET = async () => {
             },
         },
     )
+    
 }
