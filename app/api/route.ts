@@ -1,12 +1,8 @@
-import { get, parseConnectionString } from '@vercel/edge-config'
+import { createClient } from '@vercel/edge-config'
 import { NextResponse } from 'next/server'
 import { createLogger, createRequestId, type Logger } from '@/lib/logger'
 
-if (!process.env.EDGE_CONFIG)
-    throw new Error('EDGE_CONFIG is required')
-
-if (!process.env.VERCEL_OIDC_TOKEN)
-    throw new Error('VERCEL_OIDC_TOKEN is required')
+if (!process.env.EDGE_CONFIG) throw new Error('EDGE_CONFIG is required')
 
 const GOOGLE_FONTS_METADATA_URL = 'https://fonts.google.com/metadata/fonts'
 const CACHE_TTL_MS = 24 * 60 * 60 * 1000
@@ -28,9 +24,10 @@ type MetadataResponse = {
 
 let cache: CacheData | null = null
 let refreshPromise: Promise<RefreshResult> | null = null
+const edgeConfigClient = createClient(process.env.EDGE_CONFIG)
 
 const getLastFetchedAt = async () => {
-    const value = await get(LAST_FETCHED_KEY)
+    const value = await edgeConfigClient.get(LAST_FETCHED_KEY)
 
     if (typeof value === 'number' && Number.isFinite(value)) return value
 
@@ -50,26 +47,14 @@ const isCacheFresh = (lastFetchedAt: number | null) => {
 }
 
 const updateLastFetchedAt = async (fetchedAt: number, log: Logger) => {
-    const connectionString = process.env.EDGE_CONFIG
-
-    if (!connectionString) throw new Error('EDGE_CONFIG is not set')
-
-    const connection = parseConnectionString(connectionString)
-
-    if (!connection) throw new Error('EDGE_CONFIG connection string is invalid')
-
     const vercelToken = process.env.VERCEL_API_TOKEN ?? process.env.VERCEL_OIDC_TOKEN
 
     if (!vercelToken) throw new Error('VERCEL_API_TOKEN or VERCEL_OIDC_TOKEN is not set')
-    
-    log.info(`EDGE_CONFIG: ${process.env.EDGE_CONFIG}`)
-    log.info(`VERCEL_API_TOKEN: ${process.env.VERCEL_API_TOKEN}`)
-    log.info(`VERCEL_OIDC_TOKEN: ${process.env.VERCEL_OIDC_TOKEN}`)
-    
+
     log.info('edge-config.update.start', { fetchedAt })
     const updateStartedAt = Date.now()
 
-    const response = await fetch(`https://api.vercel.com/v1/edge-config/${connection.id}/items`, {
+    const response = await fetch(`https://api.vercel.com/v1/edge-config/${edgeConfigClient.connection.id}/items`, {
         method: 'PATCH',
         headers: {
             Authorization: `Bearer ${vercelToken}`,
