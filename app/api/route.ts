@@ -7,6 +7,11 @@ if (!process.env.BLOB_READ_WRITE_TOKEN) throw new Error('BLOB_READ_WRITE_TOKEN i
 const GOOGLE_FONTS_METADATA_URL = 'https://fonts.google.com/metadata/fonts'
 const CACHE_TTL_MS = 24 * 60 * 60 * 1000
 const LAST_FETCHED_PATHNAME = 'cache/fonts-last-fetched.txt'
+const corsHeaders = {
+    'Access-Control-Allow-Origin': '*',
+    'Access-Control-Allow-Methods': 'GET, OPTIONS',
+    'Access-Control-Allow-Headers': 'Content-Type, Authorization',
+}
 
 type CacheData = {
     families: string[]
@@ -153,7 +158,7 @@ export const GET = async () => {
 
         if (!families) {
             log.error('cache.unavailable')
-            return NextResponse.json({ error: 'Font cache unavailable' }, { status: 500 })
+            return NextResponse.json({ error: 'Font cache unavailable' }, { status: 500, headers: corsHeaders })
         }
 
         log.info('request.success', {
@@ -169,6 +174,7 @@ export const GET = async () => {
             },
             {
                 headers: {
+                    ...corsHeaders,
                     'Cache-Control': 'public, max-age=86400, s-maxage=86400',
                 },
             },
@@ -177,6 +183,8 @@ export const GET = async () => {
         const err = error instanceof Error ? error : new Error('Unknown error')
         log.error('request.error', { message: err.message, stack: err.stack })
 
-        return NextResponse.json({ error: 'Font cache unavailable' }, { status: 500 })
+        return NextResponse.json({ error: 'Font cache unavailable' }, { status: 500, headers: corsHeaders })
     }
 }
+
+export const OPTIONS = async () => new NextResponse(null, { status: 204, headers: corsHeaders })
