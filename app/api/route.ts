@@ -1,12 +1,12 @@
-import { createClient } from '@vercel/edge-config'
+import { BlobNotFoundError, head, put } from '@vercel/blob'
 import { NextResponse } from 'next/server'
 import { createLogger, createRequestId, type Logger } from '@/lib/logger'
 
-if (!process.env.EDGE_CONFIG) throw new Error('EDGE_CONFIG is required')
+if (!process.env.BLOB_READ_WRITE_TOKEN) throw new Error('BLOB_READ_WRITE_TOKEN is required')
 
 const GOOGLE_FONTS_METADATA_URL = 'https://fonts.google.com/metadata/fonts'
 const CACHE_TTL_MS = 24 * 60 * 60 * 1000
-const LAST_FETCHED_KEY = 'fontsLastFetchedAt'
+const LAST_FETCHED_PATHNAME = 'cache/fonts-last-fetched.txt'
 
 type CacheData = {
     families: string[]
@@ -24,15 +24,25 @@ type MetadataResponse = {
 
 let cache: CacheData | null = null
 let refreshPromise: Promise<RefreshResult> | null = null
-const edgeConfigClient = createClient(process.env.EDGE_CONFIG)
 
 const getLastFetchedAt = async () => {
-    const value = await edgeConfigClient.get(LAST_FETCHED_KEY)
+    let value: string
 
-    if (typeof value === 'number' && Number.isFinite(value)) return value
+    try {
+        const blob = await head(LAST_FETCHED_PATHNAME)
+        const response = await fetch(blob.url, { cache: 'no-store' })
+
+        if (!response.ok) throw new Error(`Failed to read last fetch timestamp: ${response.status}`)
+
+        value = await response.text()
+    } catch (error) {
+        if (error instanceof BlobNotFoundError) return null
+
+        throw error
+    }
 
     if (typeof value === 'string') {
-        const parsed = Number(value)
+        const parsed = Number(value.trim())
 
         if (Number.isFinite(parsed)) return parsed
     }
@@ -47,33 +57,18 @@ const isCacheFresh = (lastFetchedAt: number | null) => {
 }
 
 const updateLastFetchedAt = async (fetchedAt: number, log: Logger) => {
-    const vercelToken = process.env.VERCEL_API_TOKEN ?? process.env.VERCEL_OIDC_TOKEN
-
-    if (!vercelToken) throw new Error('VERCEL_API_TOKEN or VERCEL_OIDC_TOKEN is not set')
-
-    log.info('edge-config.update.start', { fetchedAt })
+    log.info('blob.update.start', { fetchedAt })
     const updateStartedAt = Date.now()
 
-    const response = await fetch(`https://api.vercel.com/v1/edge-config/${edgeConfigClient.connection.id}/items`, {
-        method: 'PATCH',
-        headers: {
-            Authorization: `Bearer ${vercelToken}`,
-            'Content-Type': 'application/json',
-        },
-        body: JSON.stringify({
-            items: [
-                {
-                    operation: 'upsert',
-                    key: LAST_FETCHED_KEY,
-                    value: fetchedAt,
-                },
-            ],
-        }),
+    await put(LAST_FETCHED_PATHNAME, `${fetchedAt}`, {
+        access: 'public',
+        addRandomSuffix: false,
+        allowOverwrite: true,
+        contentType: 'text/plain',
+        cacheControlMaxAge: Math.floor(CACHE_TTL_MS / 1000),
     })
 
-    if (!response.ok) throw new Error(`Failed to update Edge Config: ${response.status}`)
-
-    log.info('edge-config.update.done', { durationMs: Date.now() - updateStartedAt, status: response.status })
+    log.info('blob.update.done', { durationMs: Date.now() - updateStartedAt })
 }
 
 const parseFontFamilies = (rawText: string) => {
