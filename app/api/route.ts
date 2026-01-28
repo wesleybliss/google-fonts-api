@@ -1,5 +1,5 @@
 import { BlobNotFoundError, head, put } from '@vercel/blob'
-import { NextResponse } from 'next/server'
+import { type NextRequest, NextResponse } from 'next/server'
 import { createLogger, createRequestId, type Logger } from '@/lib/logger'
 
 if (!process.env.BLOB_READ_WRITE_TOKEN) throw new Error('BLOB_READ_WRITE_TOKEN is required')
@@ -14,17 +14,21 @@ const corsHeaders = {
 }
 
 type CacheData = {
-    families: string[]
+    families: FontMetadata[]
 }
 
 type RefreshResult = CacheData & {
     fetchedAt: number
 }
 
+type FontMetadata = {
+    family: string
+    category: string
+    classifications: string[]
+}
+
 type MetadataResponse = {
-    familyMetadataList?: Array<{
-        family?: string
-    }>
+    familyMetadataList?: Array<FontMetadata>
 }
 
 let cache: CacheData | null = null
@@ -46,11 +50,9 @@ const getLastFetchedAt = async () => {
         throw error
     }
 
-    if (typeof value === 'string') {
-        const parsed = Number(value.trim())
+    const parsed = Number(value.trim())
 
-        if (Number.isFinite(parsed)) return parsed
-    }
+    if (Number.isFinite(parsed)) return parsed
 
     return null
 }
@@ -76,19 +78,19 @@ const updateLastFetchedAt = async (fetchedAt: number, log: Logger) => {
     log.info('blob.update.done', { durationMs: Date.now() - updateStartedAt })
 }
 
-const parseFontFamilies = (rawText: string) => {
+const parseFontFamilies = (rawText: string): FontMetadata[] => {
     const sanitized = rawText.replace(/^\)\]\}'\n?/, '')
     const data = JSON.parse(sanitized) as MetadataResponse
-    const families = new Set<string>()
+    const families = new Map<string, FontMetadata>()
 
     for (const entry of data.familyMetadataList ?? []) {
         if (!entry.family) continue
 
         const encoded = encodeURIComponent(entry.family).replaceAll('%20', '+')
-        families.add(encoded)
+        families.set(encoded, entry)
     }
 
-    return Array.from(families).sort((a, b) => a.localeCompare(b))
+    return Array.from(families.values())
 }
 
 const refreshCache = async (log: Logger) => {
@@ -133,33 +135,44 @@ const refreshCache = async (log: Logger) => {
     }
 }
 
-export const GET = async () => {
+export const GET = async (req: NextRequest) => {
     const requestId = createRequestId()
     const log = createLogger(requestId)
     const requestStartedAt = Date.now()
+
+    const noCache = req.nextUrl.searchParams.get('noCache') === 'true'
+    const excludeCategories = (req.nextUrl.searchParams.get('excludeCategories')?.split(',') ?? []).map((it) =>
+        it.toLowerCase(),
+    )
 
     log.info('request.start', { route: 'GET /api', cacheTtlMs: CACHE_TTL_MS })
 
     try {
         let lastFetchedAt = await getLastFetchedAt()
-        let families: string[] | null = null
+        let metas: FontMetadata[] | null = null
 
         log.info('cache.status', { hasCache: Boolean(cache), lastFetchedAt })
 
-        if (cache && isCacheFresh(lastFetchedAt)) {
-            families = cache.families
-            log.info('cache.hit', { familiesCount: families.length })
+        if (!noCache && cache && isCacheFresh(lastFetchedAt)) {
+            metas = cache.families
+            log.info('cache.hit', { familiesCount: metas.length })
         } else {
-            log.info('cache.miss', { reason: cache ? 'stale' : 'empty' })
+            log.info('cache.miss', { reason: noCache ? 'requested-bust' : cache ? 'stale' : 'empty' })
             const refreshed = await refreshCache(log)
-            families = refreshed.families
+            metas = refreshed.families
             lastFetchedAt = refreshed.fetchedAt
         }
 
-        if (!families) {
+        if (!metas) {
             log.error('cache.unavailable')
             return NextResponse.json({ error: 'Font cache unavailable' }, { status: 500, headers: corsHeaders })
         }
+
+        const families = metas
+            .filter((entry) => {
+                return !(excludeCategories?.length && excludeCategories.includes(entry.category.toLowerCase()))
+            })
+            .map((it) => it.family)
 
         log.info('request.success', {
             durationMs: Date.now() - requestStartedAt,
