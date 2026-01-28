@@ -2,6 +2,12 @@ import { get, parseConnectionString } from '@vercel/edge-config'
 import { NextResponse } from 'next/server'
 import { createLogger, createRequestId, type Logger } from '@/lib/logger'
 
+if (!process.env.EDGE_CONFIG)
+    throw new Error('EDGE_CONFIG is required')
+
+if (!process.env.VERCEL_OIDC_TOKEN)
+    throw new Error('VERCEL_OIDC_TOKEN is required')
+
 const GOOGLE_FONTS_METADATA_URL = 'https://fonts.google.com/metadata/fonts'
 const CACHE_TTL_MS = 24 * 60 * 60 * 1000
 const LAST_FETCHED_KEY = 'fontsLastFetchedAt'
@@ -55,7 +61,11 @@ const updateLastFetchedAt = async (fetchedAt: number, log: Logger) => {
     const vercelToken = process.env.VERCEL_API_TOKEN ?? process.env.VERCEL_OIDC_TOKEN
 
     if (!vercelToken) throw new Error('VERCEL_API_TOKEN or VERCEL_OIDC_TOKEN is not set')
-
+    
+    log.info(`EDGE_CONFIG: ${process.env.EDGE_CONFIG}`)
+    log.info(`VERCEL_API_TOKEN: ${process.env.VERCEL_API_TOKEN}`)
+    log.info(`VERCEL_OIDC_TOKEN: ${process.env.VERCEL_OIDC_TOKEN}`)
+    
     log.info('edge-config.update.start', { fetchedAt })
     const updateStartedAt = Date.now()
 
